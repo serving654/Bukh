@@ -71,7 +71,7 @@ const getDeviceId = () => {
   let id = localStorage.getItem(key);
 
   if (!id) {
-    id = crypto.randomUUID().replaceAll('-', '');
+    id = crypto.randomUUID().replaceAll(/-/g, '');
     localStorage.setItem(key, id);
   }
 
