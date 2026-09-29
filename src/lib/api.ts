@@ -1,6 +1,20 @@
 import { supabase } from './supabase';
 import type { Bookmark, Collection, Tag, Profile, UserPreferences } from './types';
+export const bootstrapDevice = async (device_id: string) => {
+  const { data, error } = await supabase.functions.invoke('bukh-bootstrap', {
+    body: { device_id }
+  });
 
+  if (error) throw error;
+  if (!data?.success || !data?.data?.session) {
+    throw new Error(data?.error?.message || 'Unable to initialize Bukh.');
+  }
+
+  const { error: sessionError } = await supabase.auth.setSession(data.data.session);
+  if (sessionError) throw sessionError;
+
+  return data.data;
+};
 const fn = async <T>(name: string, body: Record<string, unknown> = {}) => {
   const { data, error } = await supabase.functions.invoke(name, { body });
   if (error) throw error;
