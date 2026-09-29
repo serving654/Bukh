@@ -2050,4 +2050,50 @@ function SettingsPanel({
               onChange={(e) =>
                 save({
                   glow_intensity:
-                    Number(
+                                        Number(e.target.value),
+                })
+              }
+            />
+          </label>
+        </div>
+
+        <div className="setting-actions">
+          <button
+            className="secondary"
+            onClick={reset}
+          >
+            Reset customization
+          </button>
+
+          <button
+            className="secondary"
+            onClick={onImport}
+          >
+            Import
+          </button>
+
+          <button
+            className="secondary"
+            onClick={onExportJson}
+          >
+            Export JSON
+          </button>
+
+          <button
+            className="secondary"
+            onClick={onExportHtml}
+          >
+            Export HTML
+          </button>
+
+          <button
+            className="danger"
+            onClick={onLogout}
+          >
+            Log out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
