@@ -1,165 +1,530 @@
 import { supabase } from './supabase';
-import type { Bookmark, Collection, Tag, Profile, UserPreferences } from './types';
-export const bootstrapDevice = async (device_id: string) => {
-  const { data, error } = await supabase.functions.invoke('bukh-bootstrap', {
-    body: { device_id }
-  });
+
+import type {
+  Bookmark,
+  Collection,
+  Tag,
+  Profile,
+  UserPreferences
+} from './types';
+
+/* ─────────────────────────────────────────────
+   SESSION
+───────────────────────────────────────────── */
+
+const currentUserId = async (): Promise<string> => {
+  const {
+    data: { user },
+    error
+  } = await supabase.auth.getUser();
 
   if (error) throw error;
-  if (!data?.success || !data?.data?.session) {
-    throw new Error(data?.error?.message || 'Unable to initialize Bukh.');
+
+  if (!user) {
+    throw new Error('No active Bukh session.');
   }
 
-  const { error: sessionError } = await supabase.auth.setSession(data.data.session);
+  return user.id;
+};
+
+/* ─────────────────────────────────────────────
+   DEVICE BOOTSTRAP
+───────────────────────────────────────────── */
+
+export const bootstrapDevice = async (device_id: string) => {
+  const { data, error } = await supabase.functions.invoke(
+    'bukh-bootstrap',
+    {
+      body: { device_id }
+    }
+  );
+
+  if (error) throw error;
+
+  if (!data?.success || !data?.data?.session) {
+    throw new Error(
+      data?.error?.message || 'Unable to initialize Bukh.'
+    );
+  }
+
+  const { error: sessionError } =
+    await supabase.auth.setSession(data.data.session);
+
   if (sessionError) throw sessionError;
 
   return data.data;
 };
-const fn = async <T>(name: string, body: Record<string, unknown> = {}) => {
-  const { data, error } = await supabase.functions.invoke(name, { body });
-  if (error) throw error;
-  if (!data?.success) throw new Error(data?.error?.message || 'Request failed');
-  return data.data as T;
-};
 
-export const register = (user_id: string, password: string, confirm_password: string) =>
-  fn<{ message: string; session: any; profile: Profile }>('auth-register', { user_id, password, confirm_password });
+/* ─────────────────────────────────────────────
+   HELPERS
+───────────────────────────────────────────── */
 
-export const login = async (user_id: string, password: string) => {
-  const d = await fn<{ session: any; profile: Profile }>('auth-login', { user_id, password });
-  if (d.session) {
-    const { error } = await supabase.auth.setSession(d.session);
-    if (error) throw error;
+const domainFromUrl = (url: string): string | null => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
   }
-  return d.profile;
 };
 
-export const metadata = (url: string) => fn<any>('metadata', { url });
-export const deleteAccount = () => fn<{ message: string }>('auth-delete-account');
-export const logoutAll = () => fn<{ message: string }>('auth-logout-all');
-
-const domainFromUrl = (url: string) => {
-  try { return new URL(url).hostname; } catch { return null; }
-};
+/* ─────────────────────────────────────────────
+   BOOKMARKS
+───────────────────────────────────────────── */
 
 export const bookmarksApi = {
-  list: async () => {
-    const { data, error } = await supabase.from('bookmarks').select('*').order('created_at', { ascending: false });
+  list: async (): Promise<Bookmark[]> => {
+    const user_id = await currentUserId();
+
+    const { data, error } = await supabase
+      .from('bookmarks')
+      .select('*')
+      .eq('user_id', user_id)
+      .order('created_at', { ascending: false });
+
     if (error) throw error;
-    return (data ?? []) as Bookmark[];
+
+    return data ?? [];
   },
-  create: async (v: Partial<Bookmark> & { url: string }) => {
-    const payload = { ...v, domain: v.domain ?? domainFromUrl(v.url) };
-    const { data, error } = await supabase.from('bookmarks').insert(payload).select().single();
+
+  create: async (
+    value: Partial<Bookmark> & { url: string }
+  ): Promise<Bookmark> => {
+    const user_id = await currentUserId();
+
+    const payload = {
+      ...value,
+      user_id,
+      url: value.url,
+      title: value.title ?? '',
+      domain: value.domain ?? domainFromUrl(value.url),
+      is_favorite: value.is_favorite ?? false
+    };
+
+    const { data, error } = await supabase
+      .from('bookmarks')
+      .insert(payload)
+      .select()
+      .single();
+
     if (error) throw error;
-    return data as Bookmark;
+
+    return data;
   },
-  update: async (id: string, v: Partial<Bookmark>) => {
-    const { data, error } = await supabase.from('bookmarks').update(v).eq('id', id).select().single();
+
+  update: async (
+    id: string,
+    value: Partial<Bookmark>
+  ): Promise<Bookmark> => {
+    const user_id = await currentUserId();
+
+    const payload = {
+      ...value,
+      title: value.title ?? ''
+    };
+
+    const { data, error } = await supabase
+      .from('bookmarks')
+      .update(payload)
+      .eq('id', id)
+      .eq('user_id', user_id)
+      .select()
+      .single();
+
     if (error) throw error;
-    return data as Bookmark;
+
+    return data;
   },
-  remove: async (id: string) => {
-    const { error } = await supabase.from('bookmarks').delete().eq('id', id);
+
+  remove: async (id: string): Promise<void> => {
+    const user_id = await currentUserId();
+
+    const { error } = await supabase
+      .from('bookmarks')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user_id);
+
     if (error) throw error;
   },
-  open: async (id: string) => {
-    const { error } = await supabase.from('bookmarks').update({ last_opened_at: new Date().toISOString() }).eq('id', id);
+
+  open: async (id: string): Promise<void> => {
+    const user_id = await currentUserId();
+
+    const { error } = await supabase
+      .from('bookmarks')
+      .update({
+        last_opened_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .eq('user_id', user_id);
+
     if (error) throw error;
-  },
+  }
 };
+
+/* ─────────────────────────────────────────────
+   COLLECTIONS
+───────────────────────────────────────────── */
 
 export const collectionsApi = {
-  list: async () => {
-    const { data, error } = await supabase.from('collections').select('*').order('name');
+  list: async (): Promise<Collection[]> => {
+    const user_id = await currentUserId();
+
+    const { data, error } = await supabase
+      .from('collections')
+      .select('*')
+      .eq('user_id', user_id)
+      .order('created_at', { ascending: true });
+
     if (error) throw error;
-    return (data ?? []) as Collection[];
-  },
-  create: async (v: Pick<Collection, 'name'> & Partial<Collection>) => {
-    const { data, error } = await supabase.from('collections').insert(v).select().single();
-    if (error) throw error;
-    return data as Collection;
-  },
-  update: async (id: string, v: Partial<Collection>) => {
-    const { data, error } = await supabase.from('collections').update(v).eq('id', id).select().single();
-    if (error) throw error;
-    return data as Collection;
-  },
-  remove: async (id: string) => {
-    const { error } = await supabase.from('collections').delete().eq('id', id);
-    if (error) throw error;
-  },
-  addBookmark: async (collectionId: string, bookmarkId: string) => {
-    const { error } = await supabase.from('collection_bookmarks').upsert({ collection_id: collectionId, bookmark_id: bookmarkId });
-    if (error) throw error;
-  },
-  removeBookmark: async (collectionId: string, bookmarkId: string) => {
-    const { error } = await supabase.from('collection_bookmarks').delete().eq('collection_id', collectionId).eq('bookmark_id', bookmarkId);
-    if (error) throw error;
-  },
-  links: async () => {
-    const { data, error } = await supabase.from('collection_bookmarks').select('*');
-    if (error) throw error;
+
     return data ?? [];
   },
+
+  create: async (
+    value: Pick<Collection, 'name'> &
+      Partial<Collection>
+  ): Promise<Collection> => {
+    const user_id = await currentUserId();
+
+    const payload = {
+      ...value,
+      user_id
+    };
+
+    const { data, error } = await supabase
+      .from('collections')
+      .insert(payload)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return data;
+  },
+
+  update: async (
+    id: string,
+    value: Partial<Collection>
+  ): Promise<Collection> => {
+    const user_id = await currentUserId();
+
+    const { data, error } = await supabase
+      .from('collections')
+      .update(value)
+      .eq('id', id)
+      .eq('user_id', user_id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return data;
+  },
+
+  remove: async (id: string): Promise<void> => {
+    const user_id = await currentUserId();
+
+    const { error } = await supabase
+      .from('collections')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user_id);
+
+    if (error) throw error;
+  },
+
+  addBookmark: async (
+    collection_id: string,
+    bookmark_id: string
+  ): Promise<void> => {
+    const user_id = await currentUserId();
+
+    const { data: collection, error: collectionError } =
+      await supabase
+        .from('collections')
+        .select('id')
+        .eq('id', collection_id)
+        .eq('user_id', user_id)
+        .single();
+
+    if (collectionError) throw collectionError;
+
+    const { data: bookmark, error: bookmarkError } =
+      await supabase
+        .from('bookmarks')
+        .select('id')
+        .eq('id', bookmark_id)
+        .eq('user_id', user_id)
+        .single();
+
+    if (bookmarkError) throw bookmarkError;
+
+    const { error } = await supabase
+      .from('collection_bookmarks')
+      .upsert(
+        {
+          collection_id: collection.id,
+          bookmark_id: bookmark.id
+        },
+        {
+          onConflict: 'collection_id,bookmark_id'
+        }
+      );
+
+    if (error) throw error;
+  },
+
+  removeBookmark: async (
+    collection_id: string,
+    bookmark_id: string
+  ): Promise<void> => {
+    const { error } = await supabase
+      .from('collection_bookmarks')
+      .delete()
+      .eq('collection_id', collection_id)
+      .eq('bookmark_id', bookmark_id);
+
+    if (error) throw error;
+  },
+
+  links: async (): Promise<
+    { collection_id: string; bookmark_id: string }[]
+  > => {
+    const { data, error } = await supabase
+      .from('collection_bookmarks')
+      .select('collection_id, bookmark_id');
+
+    if (error) throw error;
+
+    return data ?? [];
+  }
 };
+
+/* ─────────────────────────────────────────────
+   TAGS
+───────────────────────────────────────────── */
 
 export const tagsApi = {
-  list: async () => {
-    const { data, error } = await supabase.from('tags').select('*').order('name');
+  list: async (): Promise<Tag[]> => {
+    const user_id = await currentUserId();
+
+    const { data, error } = await supabase
+      .from('tags')
+      .select('*')
+      .eq('user_id', user_id)
+      .order('name', { ascending: true });
+
     if (error) throw error;
-    return (data ?? []) as Tag[];
-  },
-  create: async (name: string) => {
-    const { data, error } = await supabase.from('tags').insert({ name: name.trim() }).select().single();
-    if (error) throw error;
-    return data as Tag;
-  },
-  update: async (id: string, name: string) => {
-    const { data, error } = await supabase.from('tags').update({ name: name.trim() }).eq('id', id).select().single();
-    if (error) throw error;
-    return data as Tag;
-  },
-  remove: async (id: string) => {
-    const { error } = await supabase.from('tags').delete().eq('id', id);
-    if (error) throw error;
-  },
-  attach: async (bookmarkId: string, tagId: string) => {
-    const { error } = await supabase.from('bookmark_tags').upsert({ bookmark_id: bookmarkId, tag_id: tagId });
-    if (error) throw error;
-  },
-  detach: async (bookmarkId: string, tagId: string) => {
-    const { error } = await supabase.from('bookmark_tags').delete().eq('bookmark_id', bookmarkId).eq('tag_id', tagId);
-    if (error) throw error;
-  },
-  links: async () => {
-    const { data, error } = await supabase.from('bookmark_tags').select('*');
-    if (error) throw error;
+
     return data ?? [];
   },
+
+  create: async (name: string): Promise<Tag> => {
+    const user_id = await currentUserId();
+
+    const cleanName = name.trim();
+
+    if (!cleanName) {
+      throw new Error('Tag name cannot be empty.');
+    }
+
+    const { data, error } = await supabase
+      .from('tags')
+      .insert({
+        name: cleanName,
+        user_id
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return data;
+  },
+
+  update: async (
+    id: string,
+    name: string
+  ): Promise<Tag> => {
+    const user_id = await currentUserId();
+
+    const cleanName = name.trim();
+
+    if (!cleanName) {
+      throw new Error('Tag name cannot be empty.');
+    }
+
+    const { data, error } = await supabase
+      .from('tags')
+      .update({
+        name: cleanName
+      })
+      .eq('id', id)
+      .eq('user_id', user_id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return data;
+  },
+
+  remove: async (id: string): Promise<void> => {
+    const user_id = await currentUserId();
+
+    const { error } = await supabase
+      .from('tags')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user_id);
+
+    if (error) throw error;
+  },
+
+  attach: async (
+    bookmark_id: string,
+    tag_id: string
+  ): Promise<void> => {
+    const user_id = await currentUserId();
+
+    const { data: bookmark, error: bookmarkError } =
+      await supabase
+        .from('bookmarks')
+        .select('id')
+        .eq('id', bookmark_id)
+        .eq('user_id', user_id)
+        .single();
+
+    if (bookmarkError) throw bookmarkError;
+
+    const { data: tag, error: tagError } =
+      await supabase
+        .from('tags')
+        .select('id')
+        .eq('id', tag_id)
+        .eq('user_id', user_id)
+        .single();
+
+    if (tagError) throw tagError;
+
+    const { error } = await supabase
+      .from('bookmark_tags')
+      .upsert(
+        {
+          bookmark_id: bookmark.id,
+          tag_id: tag.id
+        },
+        {
+          onConflict: 'bookmark_id,tag_id'
+        }
+      );
+
+    if (error) throw error;
+  },
+
+  detach: async (
+    bookmark_id: string,
+    tag_id: string
+  ): Promise<void> => {
+    const { error } = await supabase
+      .from('bookmark_tags')
+      .delete()
+      .eq('bookmark_id', bookmark_id)
+      .eq('tag_id', tag_id);
+
+    if (error) throw error;
+  },
+
+  links: async (): Promise<
+    { bookmark_id: string; tag_id: string }[]
+  > => {
+    const { data, error } = await supabase
+      .from('bookmark_tags')
+      .select('bookmark_id, tag_id');
+
+    if (error) throw error;
+
+    return data ?? [];
+  }
 };
+
+/* ─────────────────────────────────────────────
+   PROFILE
+───────────────────────────────────────────── */
 
 export const profileApi = {
-  get: async () => {
-    const { data, error } = await supabase.from('profiles').select('*').single();
+  get: async (): Promise<Profile | null> => {
+    const user_id = await currentUserId();
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('user_id', user_id)
+      .maybeSingle();
+
     if (error) throw error;
-    return data as Profile;
-  },
+
+    return data;
+  }
 };
 
+/* ─────────────────────────────────────────────
+   USER PREFERENCES
+───────────────────────────────────────────── */
+
 export const preferencesApi = {
-  get: async () => {
-    const { data, error } = await supabase.from('user_preferences').select('*').single();
+  get: async (): Promise<UserPreferences | null> => {
+    const user_id = await currentUserId();
+
+    const { data, error } = await supabase
+      .from('user_preferences')
+      .select('*')
+      .eq('user_id', user_id)
+      .maybeSingle();
+
     if (error) throw error;
-    return data as UserPreferences;
+
+    return data;
   },
-  update: async (changes: Partial<UserPreferences>) => {
-    const { data, error } = await supabase.from('user_preferences').update(changes).select().single();
+
+  update: async (
+    value: Partial<UserPreferences>
+  ): Promise<UserPreferences> => {
+    const user_id = await currentUserId();
+
+    const { data, error } = await supabase
+      .from('user_preferences')
+      .upsert(
+        {
+          ...value,
+          user_id
+        },
+        {
+          onConflict: 'user_id'
+        }
+      )
+      .select()
+      .single();
+
     if (error) throw error;
-    return data as UserPreferences;
+
+    return data;
   },
-  reset: async () => {
-    const defaults = { theme: 'dark', accent_color: 'cyan', density: 'comfortable', background_style: 'grid', glow_intensity: 'medium', border_intensity: 'medium', sidebar_mode: 'expanded', bookmark_view: 'grid', reduced_motion: false };
+
+  reset: async (): Promise<UserPreferences> => {
+    const defaults = {
+      theme: 'dark',
+      accent_color: 'cyan',
+      density: 'comfortable',
+      background_style: 'grid',
+      glow_intensity: 60,
+      border_intensity: 60,
+      sidebar_mode: 'expanded',
+      bookmark_view: 'grid',
+      reduced_motion: false
+    };
+
     return preferencesApi.update(defaults);
-  },
+  }
 };
